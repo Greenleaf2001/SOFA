@@ -3,12 +3,14 @@ import pathlib
 
 import click
 import lightning as pl
+import numpy as np
 import torch
 import yaml
 from torch.utils.data import DataLoader
 
 from dataset import MixedDataset, WeightedBinningAudioBatchSampler, collate_fn
 from modules.task.forced_alignment import LitForcedAlignmentTask
+from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
 
 
 @click.command()
@@ -44,7 +46,16 @@ from modules.task.forced_alignment import LitForcedAlignmentTask
     show_default=True,
     help="resume training from checkpoint",
 )
-def main(config_path: str, data_folder: str, pretrained_model_path, resume):
+@click.option(
+    "--ft",
+    "-ft",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="ft or not",
+)
+
+def main(config_path: str, data_folder: str, pretrained_model_path, resume, ft):
     data_folder = pathlib.Path(data_folder)
     os.environ[
         "TORCH_CUDNN_V8_API_ENABLED"
@@ -107,6 +118,33 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
         config["data_augmentation_size"] > 0,
     )
 
+    save_path = pathlib.Path("ckpt") / config["model_name"]
+    save_path.mkdir(parents=True, exist_ok=True)
+    if not ft:
+        checkpoint_callback = ModelCheckpoint(
+        dirpath=str(save_path),
+        monitor='step',
+        mode='max',
+        save_top_k=config["num_ckpt_keep"],
+        filename='{step}',
+        every_n_train_steps=config["val_check_interval"],
+        verbose=True
+        )
+    else:
+        checkpoint_callback = None
+
+    class ProgressBar(TQDMProgressBar):
+        def __init__(self, refresh_rate: int = 1, process_position: int = 0, show_steps: bool = True):
+            super().__init__(refresh_rate, process_position)
+            self.show_steps = show_steps
+        def get_metrics(self, trainer, model):
+            items = super().get_metrics(trainer, model)
+            if self.show_steps:
+                items['steps'] = str(trainer.global_step)
+            items.pop("v_num", None)
+            return items
+    ProgressBar_callback = ProgressBar()
+
     # trainer
     trainer = pl.Trainer(
         accelerator=config["accelerator"],
@@ -119,6 +157,7 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
         check_val_every_n_epoch=None,
         max_epochs=-1,
         max_steps=config["optimizer_config"]["total_steps"],
+        callbacks=[checkpoint_callback, ProgressBar_callback]
     )
 
     ckpt_path = None
@@ -141,12 +180,11 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
         val_dataloaders=valid_dataloader,
         ckpt_path=ckpt_path,
     )
-
-    # Discard the optimizer and save
-    trainer.save_checkpoint(
-        str(pathlib.Path("ckpt") / config["model_name"]) + ".ckpt", weights_only=True
-    )
-
+    
+    if ft:
+        trainer.save_checkpoint(
+            str(pathlib.Path("ckpt") / config["model_name"]) + ".ckpt", weights_only=True
+        )
 
 if __name__ == "__main__":
     main()
