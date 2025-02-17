@@ -46,3 +46,4 @@ precision: bf16-mixed # bf16-mixed , 32-true
 gradient_clip_val: 1.0
 gradient_clip_algorithm: norm #value
 val_check_interval: 500 # 0.25
+num_ckpt_keep: 5
